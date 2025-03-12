@@ -1,1 +1,1 @@
-# Communication_Protocol-Verilog-
+# CommunicationProtocol_Verilog
