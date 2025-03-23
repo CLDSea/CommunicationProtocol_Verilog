@@ -3,11 +3,10 @@ module I2C_Slave_Byte
        (
            // 时钟频率
            parameter [31: 0]CLK_FREQ = 32'd100_000_000,
-           
            // SCL速率
-           parameter [31: 0]SCL_RATE = 32'd5_000_000,
+           parameter [31: 0]SCL_RATE = 32'd1_000_000,
            // 从机地址
-           parameter [6: 0]SLAVE_ADDR = 7'h00
+           parameter [6: 0]SLAVE_ADDR = 7'h5A
        )
        (
            // 时钟信号
@@ -17,7 +16,7 @@ module I2C_Slave_Byte
            // 使能信号
            input en,
            
-           //I2C信号
+           // I2C信号
            input SCL,
            inout SDA,
            
@@ -33,19 +32,28 @@ module I2C_Slave_Byte
            // 读/写中断
            output reg irq,
            
-           //I2C STOP
+           // I2C STOP
            output reg stop
        );
        
-// 波特率分频系数
-localparam [31: 0]BAUD_SET = (CLK_FREQ * 10 / (SCL_RATE * 2) + 5) / 10;
+// SCL_RATE
+// Bidirection
+// 100KHz Standard-mode(Sm)
+// 400KHz Fast-mode(Fm)
+// 1MHz   Fast-mode Plus(Fm+)
+// 3.4MHz High-speed mode(Hs-mode)
+// Unidirection
+// 5MHz   Ultra Fast-mode(UFm)
 
-//state
+// 波特率分频系数
+localparam [31: 0]BAUD_COEF = (CLK_FREQ * 10 / (SCL_RATE * 2) + 5) / 10;
+
+// state
 localparam [2: 0]STOP = 2'd0;
 localparam [2: 0]START = 2'd1;
 localparam [2: 0]TRANSCEIVE = 2'd2;
 
-//transceive_state
+// transceive_state
 localparam [2: 0]ADDR_SLAVE = 2'd0;
 localparam [2: 0]ADDR_REG = 2'd1;
 localparam [2: 0]TRANSCEIVE_DATA = 2'd2;
@@ -74,9 +82,9 @@ reg SDA_out;
 reg ack;
 
 reg [7: 0]addr_next;
-reg [7: 0]data_byte_tmp;
+reg [7: 0]data_byte_temp;
 
-reg irq_tmp;
+reg irq_temp;
 
 // SCL同步链
 Sync_Chain Sync_Chain_inst
@@ -100,7 +108,7 @@ assign SDA_in = (SDA_sync === 1'd0) ? 1'd0 : 1'd1; // 用于仿真
 assign SDA = SDA_out ? 1'hz : 1'd0;
 
 // 波特时钟
-Clk_Div_Cnt #(BAUD_SET, BAUD_SET[31: 1])Clk_Div_Cnt_inst
+Clk_Div_Cnt #(BAUD_COEF, BAUD_COEF / 2)Clk_Div_Cnt_inst
             (
                 .clk(clk) ,
                 .rst_n(rst_n) ,
@@ -115,13 +123,13 @@ Clk_Div_Cnt #(32'd17, 32'd8)Clk_Div_Cnt_inst2
             (
                 .clk(clk_baud) ,
                 .rst_n(rst_n) ,
-                // 帧同步
+                // 字节同步
                 .phase_rst(~transceive) ,
                 .clk_div() ,
                 .cnt(cnt_baud)
             );
             
-// 帧状态机
+// I2C状态机
 always@(posedge clk or negedge en or negedge rst_n)
 begin
 	if (!rst_n || !en)
@@ -160,6 +168,8 @@ begin
 					if (!SDA_in_pre && SDA_in)
 					begin
 						state <= STOP;
+						
+						restart <= 1'd0;
 					end
 				end
 				else if (SCL_sync_pre && !SCL_sync)
@@ -184,13 +194,13 @@ begin
 					begin
 						state <= START;
 						
-						if (transceive_state == TRANSCEIVE_DATA)
+						if (transceive_state != TRANSCEIVE_DATA)
 						begin
-							restart <= 1'd1;
+							stop <= 1'd1;
 						end
 						else
 						begin
-							stop <= 1'd1;
+							restart <= 1'd1;
 						end
 						transceive <= 1'd0;
 					end
@@ -203,8 +213,7 @@ begin
 						transceive <= 1'd1;
 					end
 				end
-				
-				if (clk_baud_pre && !clk_baud) // clk_baud下降沿
+				else if (clk_baud_pre && !clk_baud) // clk_baud下降沿
 				begin
 					if (cnt_baud == 16)
 					begin
@@ -223,24 +232,24 @@ begin
 	end
 end
 
-// 位状态机
+// 字节状态机
 always@(negedge clk_baud or posedge stop or negedge rst_n)
 begin
 	if (!rst_n || stop)
 	begin
-		transceive_state <= 1'd0;
+		transceive_state <= ADDR_SLAVE;
 		
 		SDA_out <= 1'd1;
 		ack <= 1'd0;
 		
 		addr_next <= 1'd0;
-		data_byte_tmp <= 1'd0;
+		data_byte_temp <= 1'd0;
 		
 		rd_wr_n <= 1'd0;
 		addr <= 1'd0;
 		data_byte_wr <= 8'hFF;
 		
-		irq_tmp <= 1'd0;
+		irq_temp <= 1'd0;
 	end
 	else
 	begin
@@ -255,7 +264,7 @@ begin
 						begin
 							SDA_out <= data_byte_rd[7]; // Read MSB
 							
-							data_byte_tmp <= data_byte_rd;
+							data_byte_temp <= data_byte_rd;
 						end
 						else
 						begin
@@ -266,7 +275,7 @@ begin
 					begin
 						if (restart || !rd_wr_n)
 						begin
-							data_byte_tmp[7] <= SDA_in; // Write MSB
+							data_byte_temp[7] <= SDA_in; // Write MSB
 						end
 					end
 				end
@@ -275,19 +284,19 @@ begin
 			begin
 				if (!restart && rd_wr_n)
 				begin
-					SDA_out <= data_byte_tmp[6 - cnt_baud[31: 1]]; // Read MSB
+					SDA_out <= data_byte_temp[6 - cnt_baud[31: 1]]; // Read MSB
 				end
 			end
 			2, 4, 6, 8, 10, 12, 14:
 			begin
 				if (restart || !rd_wr_n)
 				begin
-					data_byte_tmp[7 - cnt_baud[31: 1]] <= SDA_in; // Write MSB
+					data_byte_temp[7 - cnt_baud[31: 1]] <= SDA_in; // Write MSB
 				end
 				
 				if (cnt_baud == 6)
 				begin
-					irq_tmp <= 1'd0;
+					irq_temp <= 1'd0;
 				end
 			end
 			15:
@@ -297,7 +306,7 @@ begin
 					begin
 						if (!rd_wr_n)
 						begin
-							if (data_byte_tmp == {SLAVE_ADDR, 1'd0}) // Write
+							if (data_byte_temp == {SLAVE_ADDR, 1'd0}) // Write
 							begin
 								transceive_state <= ADDR_REG;
 								
@@ -320,7 +329,7 @@ begin
 							SDA_out <= 1'd0; // ACK
 							ack <= 1'd0;
 							
-							addr_next <= data_byte_tmp;
+							addr_next <= data_byte_temp;
 						end
 					end
 					TRANSCEIVE_DATA:
@@ -329,14 +338,14 @@ begin
 						begin
 							data_byte_wr <= 8'hFF;
 							
-							if (data_byte_tmp == {SLAVE_ADDR, 1'd0}) // Write
+							if (data_byte_temp == {SLAVE_ADDR, 1'd0}) // Write
 							begin
 								SDA_out <= 1'd0; // ACK
 								ack <= 1'd0;
 								
 								rd_wr_n <= 1'd0;
 							end
-							else if (data_byte_tmp == {SLAVE_ADDR, 1'd1}) // Read
+							else if (data_byte_temp == {SLAVE_ADDR, 1'd1}) // Read
 							begin
 								SDA_out <= 1'd0; // ACK
 								ack <= 1'd0;
@@ -361,9 +370,9 @@ begin
 								addr_next <= addr_next + 1'd1;
 								
 								addr <= addr_next;
-								data_byte_wr <= data_byte_tmp;
+								data_byte_wr <= data_byte_temp;
 								
-								irq_tmp <= 1'd1;
+								irq_temp <= 1'd1;
 							end
 							else
 							begin
@@ -378,7 +387,7 @@ begin
 			end
 			16:
 			begin
-				data_byte_tmp <= 1'd0;
+				data_byte_temp <= 1'd0;
 				
 				if (rd_wr_n)
 				begin
@@ -390,7 +399,7 @@ begin
 						
 						addr <= addr_next;
 						
-						irq_tmp <= 1'd1;
+						irq_temp <= 1'd1;
 					end
 					else // NACK
 					begin
@@ -399,7 +408,7 @@ begin
 						rd_wr_n <= 1'd0;
 					end
 				end
-			end
+			ed
 			default:
 			begin
 			end
@@ -407,7 +416,7 @@ begin
 	end
 end
 
-// irq延迟一个周期
+// irq�延迟一个周期
 always@(posedge clk or negedge rst_n)
 begin
 	if (!rst_n)
@@ -416,7 +425,7 @@ begin
 	end
 	else
 	begin
-		irq <= irq_tmp;
+		irq <= irq_temp;
 	end
 end
 

@@ -2,7 +2,7 @@ module Clk_Div_Cnt
        #
        (
            // 分频系数
-           parameter [31: 0]CNT_MAX = 32'd1000,
+           parameter [31: 0]CNT_MAX = 32'd1_000,
            // 占空比系数
            parameter [31: 0]CNT_THRESH = 32'd500
        )
@@ -17,6 +17,7 @@ module Clk_Div_Cnt
            
            // 分频时钟
            output reg clk_div,
+           
            // 计数值
            output reg [31: 0]cnt
        );
@@ -36,18 +37,25 @@ begin
 	if (!rst_n || phase_rst)
 	begin
 		cnt <= 1'd0;
+		
 		clk_div <= 1'd1;
 	end
 	else
 	begin
-		cnt <= (cnt != CNT_MAX - 1'd1) ? cnt + 1'd1 : 1'd0;
 		if (cnt == CNT_MAX - 1'd1)
 		begin
+			cnt <= 1'd0;
+			
 			clk_div <= 1'd1;
 		end
-		else if (cnt == CNT_THRESH - 1'd1)
+		else
 		begin
-			clk_div <= 1'd0;
+			cnt <= cnt + 1'd1;
+			
+			if (cnt == CNT_THRESH - 1'd1)
+			begin
+				clk_div <= 1'd0;
+			end
 		end
 	end
 end
